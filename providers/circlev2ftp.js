@@ -383,7 +383,7 @@ function getMovieStreams(posts, queryTitle) {
   ranked = ranked.filter(function (item) {
     return item.score >= 15 &&
       item.post.type !== 'series';
-  });
+  }).slice(0, 10);
 
   debugLog('Matching movie results: ' + ranked.length);
 
