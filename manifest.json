@@ -4,12 +4,12 @@
   "scrapers": [
     {
       "id": "circleftp",
-      "name": "CircleMovie",
+      "name": "CircleV2",
       "description": "Search CircleFTP and extract the first result's direct media link.",
       "version": "1.0.0",
       "author": "Community",
-      "supportedTypes": ["movie"],
-      "filename": "providers/circle.js",
+      "supportedTypes": ["movie", "tv"],
+      "filename": "providers/circlev2ftp.js",
       "enabled": true,
       "logo": "http://new.circleftp.net/favicon.ico",
       "contentLanguage": ["en", "hi", "bn"],
