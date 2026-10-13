@@ -1,0 +1,8 @@
+{
+  "name": "nuvio-circleftp-provider",
+  "version": "1.0.0",
+  "private": true,
+  "description": "CircleFTP provider and local testing server for Nuvio.",
+  "scripts": { "start": "node server.js", "test": "node --test" },
+  "engines": { "node": ">=18" }
+}

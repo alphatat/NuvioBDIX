@@ -1,0 +1,38 @@
+{
+  "name": "AlphaTat'sREPO",
+  "version": "1.0.0",
+  "scrapers": [
+    {
+      "id": "circleftp",
+      "name": "CircleMovie",
+      "description": "Search CircleFTP and extract the first result's direct media link.",
+      "version": "1.0.0",
+      "author": "Community",
+      "supportedTypes": ["movie"],
+      "filename": "providers/circle.js",
+      "enabled": true,
+      "logo": "http://new.circleftp.net/favicon.ico",
+      "contentLanguage": ["en", "hi", "bn"],
+      "formats": ["mkv", "mp4", "avi"],
+      "limited": true,
+      "disabledPlatforms": [],
+      "supportsExternalPlayer": true
+    },
+    {
+      "id": "circleftpTV",
+      "name": "CircleFTPTV",
+      "description": "Search CircleFTP and extract the first result's direct media link.",
+      "version": "1.0.0",
+      "author": "Community",
+      "supportedTypes": ["movie", "tv"],
+      "filename": "providers/circleftp.js",
+      "enabled": true,
+      "logo": "http://new.circleftp.net/favicon.ico",
+      "contentLanguage": ["en", "hi", "bn"],
+      "formats": ["mkv", "mp4", "avi"],
+      "limited": true,
+      "disabledPlatforms": [],
+      "supportsExternalPlayer": true
+    }
+  ]
+}
