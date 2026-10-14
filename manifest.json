@@ -33,6 +33,22 @@
       "limited": true,
       "disabledPlatforms": [],
       "supportsExternalPlayer": true
-    }
+    },
+    {
+      "id": "circleTV",
+      "name": "CircleTV",
+      "description": "Search CircleFTP and extract the first result's direct media link.",
+      "version": "1.0.0",
+      "author": "Community",
+      "supportedTypes": ["movie", "tv", "series"],
+      "filename": "providers/circle.js",
+      "enabled": true,
+      "logo": "http://new.circleftp.net/favicon.ico",
+      "contentLanguage": ["en", "hi", "bn"],
+      "formats": ["mkv", "mp4", "avi"],
+      "limited": true,
+      "disabledPlatforms": [],
+      "supportsExternalPlayer": true
+    },
   ]
 }
