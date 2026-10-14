@@ -2,293 +2,152 @@
 'use strict';
 
 /*
- * CircleFTP provider for Nuvio
+ * CircleFTP provider for Nuvio TV
  *
- * Features:
- * - Searches CircleFTP's JSON API.
- * - Fetches post details and uses the direct media URL.
- * - Ranks results by title similarity and year.
- * - Logs to the local console and optionally to your PC's terminal.
- * - Supports movie and title-based TV searches.
+ * Movies:
+ *   Search CircleFTP and return all non-series results
+ *   in the exact order returned by its API.
  *
- * IMPORTANT:
- * 1. Change DEBUG_URL to your PC's LAN IP.
- * 2. Your server.js must implement POST /__debug.
- * 3. TV season/episode selection is not implemented.
+ * TV:
+ *   Select the first series result and return the
+ *   requested season/episode stream.
+ *
+ * Nuvio interface:
+ *   getStreams(tmdbId, mediaType, season, episode)
  */
 
+var PROVIDER_NAME = 'CircleFTP';
 var BASE_URL = 'http://new.circleftp.net';
 var API_URL = 'http://new.circleftp.net:5000/api/posts';
-var PROVIDER_NAME = 'CircleFTP';
 
-// Change this to your PC's LAN IP.
-// Set to an empty string to disable remote terminal logging.
-var DEBUG_URL = 'http://192.168.8.40:3000/__debug';
+/* -------------------- Logging -------------------- */
 
-function debugLog(message) {
-  // var text = '[CircleFTP] ' + String(message);
-
-  // try {
-  //   console.log(text);
-  // } catch (_) {}
-
-  // if (!DEBUG_URL) return;
-
-  // try {
-  //   fetch(DEBUG_URL, {
-  //     method: 'POST',
-  //     headers: {
-  //       'Content-Type': 'text/plain'
-  //     },
-  //     body: text
-  //   }).catch(function () {});
-  // } catch (_) {
-  //   // Logging failures must not interrupt stream discovery.
-  // }
+function log(message) {
+  try {
+    console.log('[CircleFTP] ' + String(message));
+  } catch (_) {}
 }
+
+/* -------------------- Media type -------------------- */
+
+function isTvType(mediaType) {
+  var type = String(mediaType || '').toLowerCase();
+
+  return type === 'tv' ||
+    type === 'series' ||
+    type === 'show' ||
+    type === 'anime';
+}
+
+/* -------------------- Title helpers -------------------- */
 
 function decodeHtml(value) {
   return String(value || '')
     .replace(/&amp;/gi, '&')
-    .replace(/&#38;/g, '&')
     .replace(/&quot;/gi, '"')
     .replace(/&#39;|&apos;/gi, "'")
     .replace(/&lt;/gi, '<')
     .replace(/&gt;/gi, '>');
 }
 
-function stripTags(value) {
-  return decodeHtml(String(value || '').replace(/<[^>]*>/g, ' '))
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-function normalizeTitle(value) {
-  return String(value || '')
-    .normalize ? String(value || '')
-      .normalize('NFKD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .toLowerCase()
-      .replace(/&/g, ' and ')
-      .replace(/[^a-z0-9]+/g, ' ')
-      .trim()
-    : String(value || '')
-      .toLowerCase()
-      .replace(/&/g, ' and ')
-      .replace(/[^a-z0-9]+/g, ' ')
-      .trim();
-}
-
-function getYear(value) {
-  var match = String(value || '').match(/\b(19\d{2}|20\d{2})\b/);
-  return match ? match[1] : '';
-}
-
-function getPostTitle(post) {
-  return String(
-    post.name ||
-    post.title ||
-    ''
-  ).trim();
-}
-
-function getPostYear(post) {
-  return String(post.year || getYear(post.title) || '').trim();
-}
-
-function titleSimilarity(query, candidate) {
-  var a = normalizeTitle(query);
-  var b = normalizeTitle(candidate);
-
-  if (!a || !b) return 0;
-  if (a === b) return 100;
-  if (b.indexOf(a) !== -1) return 80;
-  if (a.indexOf(b) !== -1) return 70;
-
-  var aWords = a.split(/\s+/);
-  var bWords = b.split(/\s+/);
-  var matches = 0;
-
-  for (var i = 0; i < aWords.length; i++) {
-    if (bWords.indexOf(aWords[i]) !== -1) matches++;
-  }
-
-  return Math.round(60 * matches / Math.max(aWords.length, 1));
-}
-
-function scorePost(post, queryTitle, requestedYear) {
-  var name = getPostTitle(post);
-  var title = String(post.title || '');
-  var score = Math.max(
-    titleSimilarity(queryTitle, name),
-    titleSimilarity(queryTitle, title)
-  );
-
-  var postYear = getPostYear(post);
-
-  if (requestedYear && postYear) {
-    if (requestedYear === postYear) {
-      score += 20;
-    } else {
-      score -= 25;
-    }
-  }
-
-  return score;
-}
-
-function selectBestPost(posts, queryTitle, requestedYear) {
-  if (!posts.length) return null;
-
-  var ranked = posts.map(function (post) {
-    return {
-      post: post,
-      score: scorePost(post, queryTitle, requestedYear)
-    };
-  });
-
-  ranked.sort(function (a, b) {
-    return b.score - a.score;
-  });
-
-  debugLog(
-    'Best match: ' +
-    getPostTitle(ranked[0].post) +
-    ' (score ' + ranked[0].score + ')'
-  );
-
-  // Avoid returning an obviously unrelated search result.
-  if (ranked[0].score < 15) {
-    debugLog('No sufficiently relevant result found.');
-    return null;
-  }
-
-  return ranked[0].post;
-}
-
-/*
- * When Nuvio passes a title explicitly, use it.
- * When it passes title metadata as an object, prefer original_title
- * or original_name if available.
- *
- * A numeric TMDB ID alone cannot reliably provide the original title
- * without TMDB API access. The webpage fallback below requests English.
- */
 function titleFromTmdbPage(tmdbId, mediaType) {
-  var type = mediaType === 'tv' ? 'tv' : 'movie';
+  var type = isTvType(mediaType) ? 'tv' : 'movie';
   var url = 'https://www.themoviedb.org/' +
     type + '/' + encodeURIComponent(String(tmdbId)) +
     '?language=en-US';
 
-  debugLog('Looking up TMDB title: ' + tmdbId);
+  log('Resolving title from TMDB: ' + url);
 
-  return fetch(url, {
-    headers: {
-      'Accept': 'text/html',
-      'User-Agent': 'Mozilla/5.0 (compatible; Nuvio CircleFTP provider)'
-    }
-  }).then(function (response) {
+  return fetch(url).then(function (response) {
     if (!response.ok) {
-      throw new Error('TMDB title lookup returned HTTP ' + response.status);
+      throw new Error('TMDB HTTP ' + response.status);
     }
 
     return response.text();
   }).then(function (html) {
-    // Try original-title fields if TMDB exposes them in embedded JSON.
-    var patterns = mediaType === 'tv'
-      ? [
-          /"original_name"\s*:\s*"((?:\\.|[^"\\])*)"/,
-          /"originalName"\s*:\s*"((?:\\.|[^"\\])*)"/
-        ]
-      : [
-          /"original_title"\s*:\s*"((?:\\.|[^"\\])*)"/,
-          /"originalTitle"\s*:\s*"((?:\\.|[^"\\])*)"/
-        ];
+    var property = type === 'tv'
+      ? 'original_name'
+      : 'original_title';
 
-    for (var i = 0; i < patterns.length; i++) {
-      var match = html.match(patterns[i]);
+    var pattern = new RegExp(
+      '"' + property + '"\\s*:\\s*"((?:\\\\.|[^"\\\\])*)"'
+    );
 
-      if (match && match[1]) {
-        try {
-          var original = JSON.parse('"' + match[1] + '"');
-          if (original.trim()) {
-            debugLog('Found original title metadata: ' + original);
-            return original.trim();
-          }
-        } catch (_) {}
+    var match = html.match(pattern);
+
+    if (match) {
+      try {
+        var originalTitle = JSON.parse('"' + match[1] + '"');
+
+        if (originalTitle && originalTitle.trim()) {
+          log('Original title: ' + originalTitle);
+          return originalTitle.trim();
+        }
+      } catch (_) {}
+    }
+
+    // Fallback: the page's Open Graph title.
+    // This fallback might be localized.
+    var ogMatch = html.match(
+      /<meta\b(?=[^>]*\bproperty=["']og:title["'])(?=[^>]*\bcontent=["']([^"']+)["'])[^>]*>/i
+    );
+
+    if (ogMatch && ogMatch[1]) {
+      var fallback = decodeHtml(ogMatch[1])
+        .replace(/\s*[|–—-]\s*The Movie Database.*$/i, '')
+        .trim();
+
+      if (fallback) {
+        log('Using TMDB page-title fallback: ' + fallback);
+        return fallback;
       }
     }
 
-    // Fallback: Open Graph title.
-    var og = html.match(
-      /<meta\b[^>]*\bproperty=["']og:title["'][^>]*\bcontent=["']([^"']+)["'][^>]*>/i
-    );
-
-    var title = og ? stripTags(og[1]) : '';
-
-    if (!title) {
-      var reverseOg = html.match(
-        /<meta\b[^>]*\bcontent=["']([^"']+)["'][^>]*\bproperty=["']og:title["'][^>]*>/i
-      );
-
-      title = reverseOg ? stripTags(reverseOg[1]) : '';
-    }
-
-    title = title.replace(/\s*[|–—·-]\s*The Movie Database.*$/i, '').trim();
-
-    if (!title) {
-      throw new Error('Could not extract a title from TMDB');
-    }
-
-    debugLog('Using TMDB page title: ' + title);
-    return title;
+    throw new Error('Could not resolve a title from TMDB');
   });
 }
 
-function getQueryTitle(tmdbId, mediaType, season, episode, extraTitle) {
+function getQueryTitle(tmdbId, mediaType, extraTitle) {
+  // Optional third-party/test-harness title.
   if (typeof extraTitle === 'string' && extraTitle.trim()) {
     return Promise.resolve(extraTitle.trim());
   }
 
   if (tmdbId && typeof tmdbId === 'object') {
-    var objectTitle =
-      tmdbId.original_title ||
-      tmdbId.original_name ||
-      tmdbId.title ||
-      tmdbId.name;
+    var title = isTvType(mediaType)
+      ? (tmdbId.original_name || tmdbId.name ||
+         tmdbId.original_title || tmdbId.title)
+      : (tmdbId.original_title || tmdbId.title ||
+         tmdbId.original_name || tmdbId.name);
 
-    if (objectTitle) {
-      return Promise.resolve(String(objectTitle).trim());
+    if (title) {
+      return Promise.resolve(String(title).trim());
     }
 
-    tmdbId =
-      tmdbId.id ||
-      tmdbId.tmdbId ||
-      tmdbId.tmdb_id;
+    tmdbId = tmdbId.tmdbId || tmdbId.tmdb_id || tmdbId.id;
   }
 
-  if (
-    typeof tmdbId === 'string' &&
-    tmdbId.trim() &&
-    !/^\d+$/.test(tmdbId.trim())
-  ) {
-    return Promise.resolve(tmdbId.trim());
+  if (tmdbId === undefined || tmdbId === null ||
+      String(tmdbId).trim() === '') {
+    return Promise.reject(new Error('No TMDB ID supplied'));
   }
 
-  if (tmdbId === undefined || tmdbId === null || tmdbId === '') {
-    return Promise.reject(new Error('No title or TMDB ID supplied'));
+  // A non-numeric value is treated as an already-resolved title.
+  if (!/^\d+$/.test(String(tmdbId).trim())) {
+    return Promise.resolve(String(tmdbId).trim());
   }
 
   return titleFromTmdbPage(tmdbId, mediaType);
 }
+
+/* -------------------- CircleFTP API -------------------- */
 
 function searchPosts(queryTitle) {
   var url = API_URL +
     '?searchTerm=' + encodeURIComponent(queryTitle) +
     '&order=desc';
 
-  debugLog('Searching: ' + queryTitle);
-  debugLog('Search URL: ' + url);
+  log('Searching CircleFTP: ' + queryTitle);
 
   return fetch(url, {
     headers: {
@@ -297,122 +156,281 @@ function searchPosts(queryTitle) {
     }
   }).then(function (response) {
     if (!response.ok) {
-      throw new Error('Search API returned HTTP ' + response.status);
+      throw new Error('Search API HTTP ' + response.status);
     }
 
     return response.json();
   }).then(function (data) {
-    var posts = data && Array.isArray(data.posts) ? data.posts : [];
+    var posts = data && Array.isArray(data.posts)
+      ? data.posts
+      : [];
 
-    debugLog('Search returned ' + posts.length + ' posts');
+    log('API returned ' + posts.length + ' posts');
+
+    // Do not sort, score, or reorder the API response.
+    posts.forEach(function (post, index) {
+      log('API[' + index + ']: id=' + post.id +
+        ', type=' + post.type +
+        ', title=' + (post.title || post.name || 'Untitled'));
+    });
 
     return posts;
   });
 }
 
 function getPostDetails(postId) {
-  var url = API_URL + '/' + encodeURIComponent(String(postId));
-
-  debugLog('Fetching post details: ' + postId);
-
-  return fetch(url, {
-    headers: {
-      'Accept': 'application/json, text/plain, */*',
-      'Referer': BASE_URL + '/'
+  return fetch(
+    API_URL + '/' + encodeURIComponent(String(postId)),
+    {
+      headers: {
+        'Accept': 'application/json, text/plain, */*',
+        'Referer': BASE_URL + '/'
+      }
     }
-  }).then(function (response) {
+  ).then(function (response) {
     if (!response.ok) {
-      throw new Error('Post details API returned HTTP ' + response.status);
+      throw new Error(
+        'Post details HTTP ' + response.status +
+        ' for post ' + postId
+      );
     }
 
     return response.json();
   });
 }
 
-function isValidMediaUrl(url) {
-  return typeof url === 'string' &&
-    /^https?:\/\//i.test(url.trim()) &&
-    /\.(mkv|mp4|m4v|webm|avi|mov)(?:$|[?#])/i.test(url.trim());
+/* -------------------- Movie streams -------------------- */
+
+function makeMovieStream(details, queryTitle) {
+  var url = typeof details.content === 'string'
+    ? details.content.trim()
+    : '';
+
+  if (!/^https?:\/\//i.test(url)) {
+    log('Movie post ' + details.id + ' has no direct media URL');
+    return [];
+  }
+
+  return [{
+    name: PROVIDER_NAME,
+    title: details.title || details.name || queryTitle,
+    url: url,
+    quality: details.quality || 'Unknown',
+    headers: {
+      'Referer': BASE_URL + '/'
+    }
+  }];
 }
 
-function buildStream(details, queryTitle) {
-  var mediaUrl = String(details.content || '').trim();
+function getMovieStreams(posts, queryTitle) {
+  // Keep all non-series results in the API's original order.
+  var moviePosts = posts.filter(function (post) {
+    return String(post.type || '').toLowerCase() !== 'series';
+  });
 
-  if (!mediaUrl || !/^https?:\/\//i.test(mediaUrl)) {
-    debugLog('Post ' + details.id + ' has no valid HTTP(S) content URL.');
+  log('Movie posts to resolve: ' + moviePosts.length);
+
+  // Promise.all preserves the input order even if requests
+  // complete in a different order.
+  return Promise.all(moviePosts.map(function (post) {
+    return getPostDetails(post.id).then(function (details) {
+      return makeMovieStream(details, queryTitle);
+    }).catch(function (error) {
+      log('Movie post ' + post.id + ' failed: ' +
+        (error && error.message ? error.message : String(error)));
+
+      // One failed post must not discard the other results.
+      return [];
+    });
+  })).then(function (results) {
+    var streams = [];
+
+    results.forEach(function (result) {
+      result.forEach(function (stream) {
+        streams.push(stream);
+      });
+    });
+
+    log('Final movie streams: ' + streams.length);
+
+    streams.forEach(function (stream, index) {
+      log('STREAM[' + index + ']: ' + stream.title);
+    });
+
+    return streams;
+  });
+}
+
+/* -------------------- TV season/episode helpers -------------------- */
+
+function findSeason(content, seasonNumber) {
+  if (!Array.isArray(content)) return null;
+
+  var requested = parseInt(seasonNumber, 10);
+
+  if (isNaN(requested) || requested < 1) {
+    requested = 1;
+  }
+
+  for (var i = 0; i < content.length; i++) {
+    var season = content[i];
+    var seasonName = String(season.seasonName || '');
+    var match = seasonName.match(/season\s*(\d+)/i);
+
+    if (match && parseInt(match[1], 10) === requested) {
+      return season;
+    }
+  }
+
+  // If only one unnamed season exists, use it.
+  if (content.length === 1 && !content[0].seasonName) {
+    return content[0];
+  }
+
+  return null;
+}
+
+function findEpisode(season, episodeNumber) {
+  if (!season || !Array.isArray(season.episodes)) {
     return null;
   }
 
-  debugLog('Stream URL found for post ' + details.id);
-  debugLog('Media URL: ' + mediaUrl);
+  var requested = parseInt(episodeNumber, 10);
 
-  return {
-    name: PROVIDER_NAME,
-    title: details.title || details.name || queryTitle,
-    url: mediaUrl,
-    quality: details.quality || 'Unknown',
-    headers: {
-      'Referer': BASE_URL + '/',
-      'User-Agent': 'Mozilla/5.0 (compatible; Nuvio CircleFTP provider)'
-    }
-  };
-}
-
-function getStreams(tmdbId, mediaType, season, episode, title) {
-  if (mediaType === 'tv') {
-    debugLog(
-      'TV search is title-based; season and episode matching ' +
-      'are not implemented in this version.'
-    );
+  if (isNaN(requested) || requested < 1) {
+    requested = 1;
   }
 
-  return getQueryTitle(
-    tmdbId,
-    mediaType,
-    season,
-    episode,
-    title
-  ).then(function (queryTitle) {
+  // Prefer episode numbers embedded in titles, such as S1E3.
+  for (var i = 0; i < season.episodes.length; i++) {
+    var item = season.episodes[i];
+    var title = String(item.title || '');
+
+    var match = title.match(/\bS\d+\s*E(\d+)\b/i) ||
+      title.match(/\bE(?:pisode)?\s*(\d+)\b/i);
+
+    if (match && parseInt(match[1], 10) === requested) {
+      return item;
+    }
+  }
+
+  // Fallback: use its position in the season.
+  return season.episodes[requested - 1] || null;
+}
+
+function makeTvStream(
+  details,
+  queryTitle,
+  seasonNumber,
+  episodeNumber
+) {
+  if (!Array.isArray(details.content)) {
+    log('TV post content is not a season array');
+    return [];
+  }
+
+  var season = findSeason(details.content, seasonNumber);
+
+  if (!season) {
+    log('Season ' + seasonNumber + ' was not found');
+    return [];
+  }
+
+  var episode = findEpisode(season, episodeNumber);
+
+  if (!episode) {
+    log('Episode ' + episodeNumber + ' was not found');
+    return [];
+  }
+
+  var url = String(episode.link || '').trim();
+
+  if (!/^https?:\/\//i.test(url)) {
+    log('Selected episode has no valid URL');
+    return [];
+  }
+
+  log('Selected ' + (season.seasonName || 'Season ' + seasonNumber) +
+    ', episode ' + episodeNumber + ': ' + episode.title);
+
+  return [{
+    name: PROVIDER_NAME,
+    title: episode.title ||
+      (details.name || queryTitle) +
+      ' S' + seasonNumber + 'E' + episodeNumber,
+    url: url,
+    quality: details.quality || 'Unknown',
+    headers: {
+      'Referer': BASE_URL + '/'
+    }
+  }];
+}
+
+/* -------------------- Nuvio entry point -------------------- */
+
+function getStreams(tmdbId, mediaType, season, episode) {
+  var tv = isTvType(mediaType);
+
+  log('getStreams called: id=' + tmdbId +
+    ', type=' + mediaType +
+    ', season=' + season +
+    ', episode=' + episode);
+
+  return getQueryTitle(tmdbId, mediaType).then(function (queryTitle) {
     queryTitle = String(queryTitle || '').trim();
 
     if (!queryTitle) {
       throw new Error('Resolved title is empty');
     }
 
-    var requestedYear = getYear(queryTitle);
+    log('Search title: ' + queryTitle);
 
     return searchPosts(queryTitle).then(function (posts) {
       if (!posts.length) {
-        debugLog('No search results for: ' + queryTitle);
+        log('No CircleFTP results for: ' + queryTitle);
         return [];
       }
 
-      var selected = selectBestPost(
-        posts,
-        queryTitle,
-        requestedYear
-      );
+      if (!tv) {
+        return getMovieStreams(posts, queryTitle);
+      }
 
-      if (!selected) return [];
+      // Select the first series in the API response.
+      // No scoring or sorting is applied.
+      var seriesPost = null;
 
-      debugLog(
-        'Selected post ' + selected.id + ': ' +
-        (selected.title || selected.name || '(untitled)')
-      );
+      for (var i = 0; i < posts.length; i++) {
+        if (String(posts[i].type || '').toLowerCase() === 'series') {
+          seriesPost = posts[i];
+          break;
+        }
+      }
 
-      return getPostDetails(selected.id).then(function (details) {
-        var stream = buildStream(details, queryTitle);
+      if (!seriesPost) {
+        log('No series post found in API response');
+        return [];
+      }
 
-        if (!stream) return [];
+      log('Selected series post: ' +
+        seriesPost.id + ' - ' + seriesPost.title);
 
-        return [stream];
+      return getPostDetails(seriesPost.id).then(function (details) {
+        return makeTvStream(
+          details,
+          queryTitle,
+          season,
+          episode
+        );
       });
     });
   }).catch(function (error) {
-    debugLog(
-      'ERROR: ' +
-      (error && error.message ? error.message : String(error))
-    );
+    log('ERROR: ' + (
+      error && error.stack
+        ? error.stack
+        : error && error.message
+          ? error.message
+          : String(error)
+    ));
 
     return [];
   });
